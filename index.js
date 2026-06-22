@@ -24,7 +24,7 @@
 const NS = "palimpsest";
 const Z  = 31000;
 let DEBUG = true;            // <- set false once happy; gates diagnostic toasts
-const VER = '0.5.0';
+const VER = '0.5.1';
 
 function getCtx() {
     try { return SillyTavern.getContext(); }
@@ -107,6 +107,7 @@ const FRESH = () => JSON.parse(JSON.stringify({
     history:   [],
 }));
 let state = FRESH();
+let suppressChatChanged = false;   // ignore the CHAT_CHANGED we trigger ourselves
 
 function loadState() {
     const c = getCtx();
@@ -266,10 +267,11 @@ async function generateOpening() {
         const id = makeEmergentNode(data);
         const node = STORY.nodes[id];
         state = FRESH(); state.current = id; state.history = [id];
-        applyEffects(null);
         persist();
-        await replaceFirstMessage(node);     // REPLACE, not append — shell owns the premise
-        activeTab = 'story'; render();
+        suppressChatChanged = true;            // the reload below is ours — don't let the handler clobber the view
+        await replaceFirstMessage(node);       // REPLACE, not append — shell owns the premise
+        activeTab = 'story'; render();         // render from authoritative in-memory state
+        persist();                             // re-assert metadata after the chat reload
         dbg('Opening written.');
     } catch (e) { err('Opening failed: ' + (e?.message || e)); }
 }
@@ -475,6 +477,7 @@ jQuery(async () => {
     try {
         if (c?.eventSource?.on && c?.event_types?.CHAT_CHANGED) {
             c.eventSource.on(c.event_types.CHAT_CHANGED, () => {
+                if (suppressChatChanged) { suppressChatChanged = false; return; }
                 loadState();
                 if (document.getElementById('palimpsest-overlay')?.style.display === 'flex') render();
             });
