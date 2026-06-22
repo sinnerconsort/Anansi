@@ -24,7 +24,7 @@
 const NS = "palimpsest";
 const Z  = 31000;
 let DEBUG = true;            // <- set false once happy; gates diagnostic toasts
-const VER = '0.7.0';
+const VER = '0.7.1';
 
 function getCtx() {
     try { return SillyTavern.getContext(); }
@@ -105,6 +105,7 @@ const FRESH = () => JSON.parse(JSON.stringify({
     inventory: STORY?.initial?.inventory || [],
     statuses:  STORY?.initial?.statuses || [],
     history:   [],
+    tellingNodes: {},   // generated nodes (with variants) snapshotted for reload survival
 }));
 let state = FRESH();
 let suppressChatChanged = false;   // ignore the CHAT_CHANGED we trigger ourselves
@@ -113,10 +114,19 @@ function loadState() {
     const c = getCtx();
     const saved = c?.chat_metadata?.[NS];
     state = saved ? Object.assign(FRESH(), saved) : FRESH();
+    // Re-hydrate the telling's generated pages — STORY was rebuilt from story.json on reload.
+    if (state.tellingNodes && STORY?.nodes) Object.assign(STORY.nodes, state.tellingNodes);
     if (!nodeById(state.current)) state.current = STORY?.start || 'start';   // story changed under us
 }
 function persist() {
     const c = getCtx(); if (!c) return;
+    // Snapshot the emergent nodes this telling actually references, so they
+    // survive a reload (STORY.nodes is module memory; chat_metadata is not).
+    state.tellingNodes = {};
+    new Set([...(state.history || []), state.current]).forEach(id => {
+        const n = STORY?.nodes?.[id];
+        if (n && n.variants) state.tellingNodes[id] = n;
+    });
     c.chat_metadata = c.chat_metadata || {};
     c.chat_metadata[NS] = state;
     if (typeof c.saveMetadata === 'function') c.saveMetadata();
