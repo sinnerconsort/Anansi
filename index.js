@@ -1,110 +1,118 @@
 /* =============================================================================
- * CYOA Shell v0.2.0  —  a STANDALONE gamebook shell for SillyTavern
+ * CYOA Shell v0.3.0  —  standalone gamebook shell for SillyTavern
  * -----------------------------------------------------------------------------
- * WHAT CHANGED FROM v0.1 (the three things you flagged):
+ * v0.3.0 — THE NODE LIFT
+ *   - Story content moved OUT of code into ./story.json. Edit the story without
+ *     touching index.js. Loaded via import.meta.url so the path is correct no
+ *     matter where the folder is installed; cache-busted so a fresh edit shows
+ *     up on reload instead of being served stale.
+ *   - Malformed/edited JSON no longer dies silent: validateStory() reports what
+ *     is wrong in a toast, and a built-in FALLBACK_STORY keeps the shell alive.
+ *   - FULL EFFECTS VOCABULARY locked NOW (before emergent/dice arrive) so every
+ *     future producer just pours into one socket — applyEffects():
+ *         vars:{name:delta}  give:[id]  take:[id]
+ *         setFlag:[f]  clearFlag:[f]  addStatus:[id]  removeStatus:[id]
+ *     REQUIRES vocabulary (the gate): { item } | { flag } | { status } | { var:[name,op,val] }
+ *   - statuses are a data row in story.json ({label, boosts:{var:+/-N}}); one
+ *     statusModifier() sums them. That's the hook the resolve/dice seam will
+ *     read later — built once, here, as a field + a function. No status engine.
  *
- *   1. STANDALONE — zero hard dependencies. manifest requires: []. The suite
- *      (Lexicon/Codex/Fortuna/Chronicler) is OPTIONAL: detected at runtime and
- *      used only if present. With none of them, this is still a complete game.
- *      See suiteStatus() — shown live in the Settings tab.
- *
- *   2. TAKEOVER — opening hides ST's chat, input bar, and nav, and locks body
- *      scroll; closing restores exactly what was hidden. The screen is OURS.
- *      Tappable choices, never "type 1/2/3".
- *
- *   3. BULLETPROOF + SELF-ANNOUNCING ENTRY — three ways in (FAB, wand menu,
- *      /cyoa), each best-effort and independent. Every tap toasts so you can
- *      SEE it fire without a console. Open path is fully try/caught and will
- *      TOAST THE ACTUAL ERROR if anything throws (this is what was silently
- *      failing in v0.1). Flip DEBUG to false once it's behaving.
+ * Carried intact from v0.2.2: inline-pinned takeover overlay (immune to theme
+ * transforms), 100vw/100vh, three entry points, receipts, per-chat state.
  * ========================================================================== */
 
-const NS = "cyoa-shell";  // v0.2.1
+const NS = "cyoa-shell";
 const Z  = 31000;
-let DEBUG = true;   // <- set to false later; gates the diagnostic toasts
-const VER = '0.2.2';
+let DEBUG = true;            // <- set false once happy; gates diagnostic toasts
+const VER = '0.3.0';
 
-/* Robust context getter — never assume the global is the right shape. */
 function getCtx() {
     try { return SillyTavern.getContext(); }
     catch (e) { return window.SillyTavern?.getContext?.() || null; }
 }
 function dbg(msg) { if (DEBUG) try { toastr.info(msg, 'CYOA'); } catch (e) {} }
 function err(msg) { try { toastr.error(msg, 'CYOA', { timeOut: 9000 }); } catch (e) {} }
+function warn(msg){ try { toastr.warning(msg, 'CYOA', { timeOut: 9000 }); } catch (e) {} }
 
 /* ----------------------------------------------------------------------------
- * STATE  (per-chat, in chat_metadata)
+ * STORY (data) — loaded from story.json, never hardcoded.
  * -------------------------------------------------------------------------- */
-const FRESH = () => ({
-    current:   'oythe_great_hall',
-    vars:      { vitality: 39, vitalityMax: 44, stamina: 5, defense: 2 },
-    flags:     { alerted: false },
-    inventory: ['kellsei', 'wooden_cross'],
-    history:   [],
-});
-let state = FRESH();
+let STORY = null;
 
-const NODES = {
-    oythe_great_hall: {
-        id: 'oythe_great_hall', mode: 'authored',
-        location: 'Oythe Castle — Great Hall',
-        prose: 'I creep down the stairs and peer into the entrance hall. A knight stands guard, sword and shield raised, his gaze darting about. A faint clinking comes from the chains connecting his helmet to his gambeson.',
-        image: null,
-        choices: [
-            { label: 'Attack the Crusader', goto: 'combat_crusader', effects: { setFlag: ['alerted'] } },
-            { label: 'Slip through the side door', goto: 'upper_floor', requires: { item: 'castle_key' } },
-            { label: 'Return to the Upper Floor', goto: 'upper_floor' },
-        ],
-        skeleton: { mustHit: ['the knight has not seen me yet'], exits: ['combat_crusader', 'upper_floor'] },
-    },
-    combat_crusader: {
-        id: 'combat_crusader', mode: 'authored',
-        location: 'Oythe Castle — The Crusader',
-        prose: 'He turns at the scrape of my boot. Steel rings free. There is no more creeping now — only the few feet of cold air between us, and what I choose to do with them.',
-        image: null,
-        // resolve: { engine: 'fortuna', stakes: 'FRAGILE' }   // <- Fortuna seam (optional, see resolveRoll)
-        choices: [
-            { label: 'Strike first', goto: 'upper_floor', effects: { vars: { vitality: -3 } } },
-            { label: 'Throw down my blade and run', goto: 'upper_floor' },
-        ],
-        skeleton: { mustHit: ['the fight is joined'], exits: ['upper_floor'] },
-    },
-    upper_floor: {
-        id: 'upper_floor', mode: 'authored',
-        location: 'Oythe Castle — Upper Floor',
-        prose: 'Cold flagstones, a guttering torch, the smell of old smoke. The stairwell yawns back down toward the hall. Whatever waits below, it is quieter up here.',
-        image: null,
-        choices: [
-            { label: 'Descend again', goto: 'oythe_great_hall' },
-            { label: 'Improvise from here  (✨ emergent)', emergent: true },
-        ],
-        skeleton: { mustHit: ['a moment of quiet'], exits: ['oythe_great_hall'] },
-    },
+const FALLBACK_STORY = {
+    title: 'Fallback', start: 'start',
+    initial: { vars: {}, inventory: [], flags: {}, statuses: [] },
+    items: {}, statuses: {},
+    nodes: { start: { id: 'start', mode: 'authored', location: 'story.json failed to load',
+        prose: 'The shell is running, but the story file could not be read or parsed. Check the toast for the reason, fix story.json, and use Settings → Reload story.json.',
+        image: null, choices: [] } },
 };
-const ITEM_NAMES = { kellsei: 'Kellsei', wooden_cross: 'Wooden Cross', castle_key: 'Castle Key' };
 
-/* ----------------------------------------------------------------------------
- * OPTIONAL SUITE DETECTION — enhancement only, never required.
- * -------------------------------------------------------------------------- */
-const SUITE = ['LexiconAPI', 'CodexAPI', 'ChroniclerAPI', 'FortunaAPI', 'VoiceAPI'];
-function apiPresent(name) { const c = getCtx(); return !!(c?.[name] || window?.[name]); }
-function suiteStatus() { return SUITE.map(n => ({ name: n.replace('API', ''), on: apiPresent(n) })); }
-
-/* Resolution that degrades: use Fortuna if present, else a built-in d20.
-   (Not wired to a choice in v0.2 — here so the fallback path is documented.) */
-function resolveRoll(stakes) {
-    const c = getCtx();
-    if (c?.FortunaAPI?.roll) { try { return c.FortunaAPI.roll({ stakes }); } catch (e) {} }
-    return { total: 1 + Math.floor(Math.random() * 20), source: 'builtin' };
+async function loadStory() {
+    try {
+        const url = new URL('./story.json', import.meta.url);
+        url.searchParams.set('t', Date.now());          // cache-bust every load
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('HTTP ' + res.status + ' fetching story.json');
+        const data = JSON.parse(await res.text());      // throws on malformed JSON
+        if (!data || typeof data !== 'object' || !data.nodes || !data.nodes[data.start]) {
+            throw new Error('missing "nodes" or "start" does not point to a real node');
+        }
+        const issues = validateStory(data);             // soft issues -> warn, still load
+        STORY = data;
+        if (issues.length) warn('story.json loaded with ' + issues.length + ' issue(s): ' + issues.slice(0, 3).join(' | '));
+        return true;
+    } catch (e) {
+        STORY = FALLBACK_STORY;
+        err('story.json problem: ' + (e?.message || e) + ' — using fallback.');
+        return false;
+    }
 }
 
+/* Light validation: catches the edits that would silently break navigation. */
+function validateStory(s) {
+    const issues = [];
+    const items = s.items || {}, statuses = s.statuses || {}, nodes = s.nodes || {};
+    for (const [nid, node] of Object.entries(nodes)) {
+        if (typeof node.prose !== 'string') issues.push(nid + ': no prose');
+        if (!Array.isArray(node.choices))   { issues.push(nid + ': no choices array'); continue; }
+        node.choices.forEach((ch, i) => {
+            const where = nid + ' choice ' + (i + 1);
+            if (ch.goto && !nodes[ch.goto]) issues.push(where + ': goto "' + ch.goto + '" is not a node');
+            const r = ch.requires || {};
+            if (r.item && !items[r.item])           issues.push(where + ': requires unknown item "' + r.item + '"');
+            if (r.status && !statuses[r.status])    issues.push(where + ': requires unknown status "' + r.status + '"');
+            const fx = ch.effects || {};
+            (fx.give || []).concat(fx.take || []).forEach(id => { if (!items[id]) issues.push(where + ': effect item "' + id + '" not in items'); });
+            (fx.addStatus || []).concat(fx.removeStatus || []).forEach(id => { if (!statuses[id]) issues.push(where + ': effect status "' + id + '" not in statuses'); });
+        });
+    }
+    return issues;
+}
+
+/* convenience accessors */
+const nodeById  = id => (STORY?.nodes || {})[id];
+const itemName  = id => (STORY?.items || {})[id] || id;
+const statusDef = id => (STORY?.statuses || {})[id] || { label: id, boosts: {} };
+
 /* ----------------------------------------------------------------------------
- * PERSISTENCE
+ * STATE (per-chat) — derived from STORY.initial, mirrored to chat_metadata.
  * -------------------------------------------------------------------------- */
+const FRESH = () => JSON.parse(JSON.stringify({
+    current:   STORY?.start || 'start',
+    vars:      STORY?.initial?.vars || {},
+    flags:     STORY?.initial?.flags || {},
+    inventory: STORY?.initial?.inventory || [],
+    statuses:  STORY?.initial?.statuses || [],
+    history:   [],
+}));
+let state = FRESH();
+
 function loadState() {
     const c = getCtx();
     const saved = c?.chat_metadata?.[NS];
     state = saved ? Object.assign(FRESH(), saved) : FRESH();
+    if (!nodeById(state.current)) state.current = STORY?.start || 'start';   // story changed under us
 }
 function persist() {
     const c = getCtx(); if (!c) return;
@@ -114,21 +122,21 @@ function persist() {
     else if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced();
 }
 
-/* RECEIPTS — every committed page writes one message to the real chat. */
 async function commitReceipt(node, choiceLabel) {
     const c = getCtx(); if (!c?.chat) return;
     const tail = choiceLabel ? `\n\n→ *${choiceLabel}*` : '';
-    const msg = {
-        name: c.name2 || 'Story', is_user: false,
+    const msg = { name: c.name2 || 'Story', is_user: false,
         mes: `〔${node.location}〕\n\n${node.prose}${tail}`,
-        send_date: Date.now(), extra: { [NS]: true, cyoaPage: node.id },
-    };
+        send_date: Date.now(), extra: { [NS]: true, cyoaPage: node.id } };
     c.chat.push(msg);
     try { await c.saveChat?.(); } catch (e) {}
     try { c.addOneMessage?.(msg); } catch (e) {}
 }
 
-/* RULES — JS owns the math. */
+/* ----------------------------------------------------------------------------
+ * THE WAIST — one consumer. Authored effects and (later) emergent/extracted
+ * effects flow through THIS, never a parallel path. JS owns all the math.
+ * -------------------------------------------------------------------------- */
 function applyEffects(fx) {
     if (!fx) return;
     if (fx.vars) for (const [k, d] of Object.entries(fx.vars)) {
@@ -137,20 +145,38 @@ function applyEffects(fx) {
     }
     if (fx.give) for (const id of fx.give) if (!state.inventory.includes(id)) state.inventory.push(id);
     if (fx.take) for (const id of fx.take) state.inventory = state.inventory.filter(x => x !== id);
-    if (fx.setFlag) for (const f of fx.setFlag) state.flags[f] = true;
+    if (fx.setFlag)   for (const f of fx.setFlag)   state.flags[f] = true;
     if (fx.clearFlag) for (const f of fx.clearFlag) state.flags[f] = false;
+    if (fx.addStatus) for (const id of fx.addStatus) if (!state.statuses.includes(id)) state.statuses.push(id);
+    if (fx.removeStatus) for (const id of fx.removeStatus) state.statuses = state.statuses.filter(x => x !== id);
 }
+
+/* Sum status boosts for one var. The resolve/dice seam will read this later. */
+function statusModifier(varName) {
+    return (state.statuses || []).reduce((m, id) => m + ((statusDef(id).boosts || {})[varName] || 0), 0);
+}
+
+/* The gate. Returns true, or a human reason string if locked. */
 function lockReason(choice) {
     const r = choice.requires; if (!r) return true;
-    if (r.item && !state.inventory.includes(r.item)) return `Requires: ${ITEM_NAMES[r.item] || r.item}`;
-    if (r.flag && !state.flags[r.flag]) return `Requires: ${r.flag}`;
+    if (r.item && !state.inventory.includes(r.item)) return 'Requires: ' + itemName(r.item);
+    if (r.flag && !state.flags[r.flag])              return 'Requires: ' + r.flag;
+    if (r.status && !state.statuses.includes(r.status)) return 'Requires: ' + statusDef(r.status).label;
+    if (Array.isArray(r.var)) {
+        const [name, op, val] = r.var, cur = state.vars[name] ?? 0;
+        const ok = op === '>=' ? cur >= val : op === '<=' ? cur <= val : op === '>' ? cur > val
+                 : op === '<' ? cur < val : op === '==' ? cur === val : true;
+        if (!ok) return 'Requires: ' + name + ' ' + op + ' ' + val;
+    }
     return true;
 }
 
-/* NAVIGATION */
+/* ----------------------------------------------------------------------------
+ * NAVIGATION
+ * -------------------------------------------------------------------------- */
 async function goTo(nodeId, choice) {
-    const node = NODES[nodeId];
-    if (!node) { err(`No node: ${nodeId}`); return; }
+    const node = nodeById(nodeId);
+    if (!node) { err('No node: ' + nodeId); return; }
     if (choice?.effects) applyEffects(choice.effects);
     state.current = nodeId; state.history.push(nodeId);
     persist();
@@ -161,20 +187,20 @@ async function improvise(seedLabel) {
     const c = getCtx();
     if (typeof c?.generateQuietPrompt !== 'function') { err('generateQuietPrompt unavailable on this ST.'); return; }
     dbg('Improvising…');
+    // NOTE (next phase): emergent will also EMIT effects into the vocabulary
+    // above; the socket (applyEffects) is already here waiting for it.
     const quietPrompt =
-        `You are the narrator of a second-person gamebook. Continue briefly (2-4 sentences) ` +
-        `from: "${seedLabel}". Then offer 2-3 choices. Reply ONLY with fenced JSON:\n` +
+        'You are the narrator of a second-person gamebook. Continue briefly (2-4 sentences) ' +
+        'from: "' + seedLabel + '". Then offer 2-3 choices. Reply ONLY with fenced JSON:\n' +
         '```json\n{ "location": "...", "prose": "...", "choices": [ { "label": "..." } ] }\n```';
     try {
         const raw = await c.generateQuietPrompt({ quietPrompt });
         const data = JSON.parse(String(raw).replace(/```json|```/g, '').trim());
         if (!data.prose || !Array.isArray(data.choices)) throw new Error('shape');
         const id = 'emergent_' + Date.now();
-        NODES[id] = {
-            id, mode: 'emergent', location: data.location || 'Improvised',
+        STORY.nodes[id] = { id, mode: 'emergent', location: data.location || 'Improvised',
             prose: data.prose, image: null,
-            choices: data.choices.slice(0, 3).map(ch => ({ label: ch.label, emergent: true })),
-        };
+            choices: data.choices.slice(0, 3).map(ch => ({ label: ch.label, emergent: true })) };
         await goTo(id);
     } catch (e) { err('Could not parse the model output. Staying put.'); }
 }
@@ -183,65 +209,90 @@ async function improvise(seedLabel) {
  * RENDER
  * -------------------------------------------------------------------------- */
 let activeTab = 'story';
-const ORN = `<div class="cyoa-orn">&gt;—&lt;&nbsp;&nbsp;&gt;—&lt;&nbsp;&nbsp;&gt;—&lt;</div>`;
+const ORN = '<div class="cyoa-orn">&gt;—&lt;&nbsp;&nbsp;&gt;—&lt;&nbsp;&nbsp;&gt;—&lt;</div>';
+
 function statBar() {
-    const v = state.vars, cell = (l, val) => `<span class="cyoa-stat">${l} <b>[${val}]</b></span>`;
-    return `<div class="cyoa-statbar">${cell('STAMINA', `${v.stamina}/5`)}${cell('VITALITY', `${v.vitality}/${v.vitalityMax}`)}${cell('DEFENSE', v.defense)}</div>`;
+    const v = state.vars;
+    const cell = (l, val) => '<span class="cyoa-stat">' + l + ' <b>[' + val + ']</b></span>';
+    const cells = [];
+    if (v.stamina != null)  cells.push(cell('STAMINA', v.stamina + '/5'));
+    if (v.vitality != null) cells.push(cell('VITALITY', v.vitality + '/' + (v.vitalityMax ?? '?')));
+    if (v.defense != null) {
+        const mod = statusModifier('defense');
+        cells.push(cell('DEFENSE', mod ? (v.defense + mod) + ' (' + (mod > 0 ? '+' : '') + mod + ')' : v.defense));
+    }
+    let html = '<div class="cyoa-statbar">' + cells.join('') + '</div>';
+    if (state.statuses && state.statuses.length) {
+        const chips = state.statuses.map(id =>
+            '<span style="display:inline-block;padding:2px 9px;margin:0 4px;border:1px solid #3a3a40;border-radius:11px;font-size:11px;letter-spacing:1.5px;color:#b9b6ab;">'
+            + statusDef(id).label.toUpperCase() + '</span>').join('');
+        html += '<div style="text-align:center;margin:-8px 0 18px;">' + chips + '</div>';
+    }
+    return html;
 }
+
 function storyView() {
-    const node = NODES[state.current] || NODES.oythe_great_hall;
+    const node = nodeById(state.current) || nodeById(STORY.start);
+    if (!node) return '<div class="cyoa-empty">No story loaded.</div>';
     const choices = node.choices.map((ch, i) => {
         const lock = lockReason(ch);
         return lock !== true
-            ? `<div class="cyoa-choice locked">« ${ch.label} »<div class="cyoa-lock">${lock}</div></div>`
-            : `<div class="cyoa-choice" data-i="${i}">« ${ch.label} »</div>`;
+            ? '<div class="cyoa-choice locked">« ' + ch.label + ' »<div class="cyoa-lock">' + lock + '</div></div>'
+            : '<div class="cyoa-choice" data-i="' + i + '">« ' + ch.label + ' »</div>';
     }).join('');
-    return `${statBar()}<div class="cyoa-loc">${node.location}</div>${ORN}
-        <div class="cyoa-prose">${node.prose}</div>
-        ${node.image ? `<img class="cyoa-img" src="${node.image}">` : ''}${ORN}
-        <div class="cyoa-choices">${choices}</div>`;
+    return statBar()
+        + '<div class="cyoa-loc">' + node.location + '</div>' + ORN
+        + '<div class="cyoa-prose">' + node.prose + '</div>'
+        + (node.image ? '<img class="cyoa-img" src="' + node.image + '">' : '') + ORN
+        + '<div class="cyoa-choices">' + choices + '</div>';
 }
 function journalView() {
     const rows = state.history.length
-        ? state.history.map(id => `<div class="cyoa-row">${NODES[id]?.location || id}</div>`).join('')
-        : `<div class="cyoa-empty">No pages turned yet.</div>`;
-    return `<div class="cyoa-loc">Journal</div>${ORN}<div class="cyoa-list">${rows}</div>`;
+        ? state.history.map(id => '<div class="cyoa-row">' + (nodeById(id)?.location || id) + '</div>').join('')
+        : '<div class="cyoa-empty">No pages turned yet.</div>';
+    return '<div class="cyoa-loc">Journal</div>' + ORN + '<div class="cyoa-list">' + rows + '</div>';
 }
 function inventoryView() {
     const rows = state.inventory.length
-        ? state.inventory.map(id => `<div class="cyoa-row">${ITEM_NAMES[id] || id}</div>`).join('')
-        : `<div class="cyoa-empty">Empty.</div>`;
-    return `<div class="cyoa-loc">Inventory</div>${ORN}<div class="cyoa-list">${rows}</div>`;
+        ? state.inventory.map(id => '<div class="cyoa-row">' + itemName(id) + '</div>').join('')
+        : '<div class="cyoa-empty">Empty.</div>';
+    return '<div class="cyoa-loc">Inventory</div>' + ORN + '<div class="cyoa-list">' + rows + '</div>';
 }
 function settingsView() {
-    const suite = suiteStatus().map(s =>
-        `<div class="cyoa-row" style="cursor:default">${s.name} <b style="color:${s.on ? '#7fae6e' : '#6a685f'}">${s.on ? '✓ detected' : '— not present'}</b></div>`
-    ).join('');
-    return `<div class="cyoa-loc">Settings</div>${ORN}
-        <div class="cyoa-list">
-            <div class="cyoa-empty">Optional suite integrations — the shell runs without any of them.</div>
-            ${suite}
-            <div class="cyoa-row" id="cyoa-reset">↺ Reset this story</div>
-        </div>`;
+    const SUITE = ['LexiconAPI', 'CodexAPI', 'ChroniclerAPI', 'FortunaAPI', 'VoiceAPI'];
+    const present = n => !!(getCtx()?.[n] || window?.[n]);
+    const suite = SUITE.map(n => { const on = present(n); const nm = n.replace('API', '');
+        return '<div class="cyoa-row" style="cursor:default">' + nm + ' <b style="color:' + (on ? '#7fae6e' : '#6a685f') + '">' + (on ? '✓ detected' : '— not present') + '</b></div>'; }).join('');
+    return '<div class="cyoa-loc">Settings</div>' + ORN
+        + '<div class="cyoa-list">'
+        + '<div class="cyoa-row" id="cyoa-reload">⟳ Reload story.json</div>'
+        + '<div class="cyoa-empty">Story: ' + (STORY?.title || '—') + ' · v' + VER + '</div>'
+        + '<div class="cyoa-empty">Optional suite integrations — the shell runs without any.</div>'
+        + suite
+        + '<div class="cyoa-row" id="cyoa-reset">↺ Reset this story</div>'
+        + '</div>';
 }
+
 function render() {
     const $body = document.getElementById('cyoa-body'); if (!$body) return;
     $body.innerHTML = activeTab === 'journal' ? journalView()
         : activeTab === 'inventory' ? inventoryView()
         : activeTab === 'settings' ? settingsView() : storyView();
     $body.querySelectorAll('.cyoa-choice[data-i]').forEach(el => el.addEventListener('click', () => {
-        const ch = NODES[state.current].choices[Number(el.dataset.i)];
+        const ch = nodeById(state.current).choices[Number(el.dataset.i)];
         if (ch.emergent) improvise(ch.label);
         else if (ch.goto) goTo(ch.goto, ch);
         else toastr.warning('No destination yet.', 'CYOA');
     }));
     const reset = document.getElementById('cyoa-reset');
     if (reset) reset.addEventListener('click', () => { state = FRESH(); persist(); activeTab = 'story'; render(); dbg('Story reset.'); });
+    const reload = document.getElementById('cyoa-reload');
+    if (reload) reload.addEventListener('click', async () => { await loadStory(); loadState(); render(); dbg('Reloaded ' + (STORY?.title || 'story') + '.'); });
     document.querySelectorAll('.cyoa-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === activeTab));
 }
 
 /* ----------------------------------------------------------------------------
- * TAKEOVER — hide ST chrome on open, restore exactly on close.
+ * TAKEOVER + SHELL  (unchanged from v0.2.2 — inline-pinned, theme-immune)
  * -------------------------------------------------------------------------- */
 const CHROME = ['#sheld', '#form_sheld', '#top-bar', '#top-settings-holder', '#leftNavDrawerIcon', '#rightNavDrawerIcon'];
 let hiddenChrome = [];
@@ -253,24 +304,17 @@ function hideChrome() {
 }
 function restoreChrome() {
     hiddenChrome.forEach(([el, d]) => { el.style.display = d || ''; });
-    hiddenChrome = [];
-    document.body.classList.remove('cyoa-lock');
+    hiddenChrome = []; document.body.classList.remove('cyoa-lock');
 }
 
-/* ----------------------------------------------------------------------------
- * SHELL
- * -------------------------------------------------------------------------- */
 function buildShell() {
-    document.getElementById('cyoa-overlay')?.remove();   // rebuild fresh every open
+    document.getElementById('cyoa-overlay')?.remove();
     const overlay = document.createElement('div');
     overlay.id = 'cyoa-overlay';
-    // Load-bearing layout is pinned INLINE so ST's theme CSS can't collapse it.
-    // (style.css now only handles cosmetics: type, choice colors, ornaments.)
     overlay.style.cssText =
         'position:fixed;top:0;left:0;right:0;bottom:0;width:100vw;height:100vh;' +
         'z-index:' + (Z + 1) + ';display:flex;flex-direction:column;' +
-        'background:#0c0c0e;color:#d6d4cc;' +
-        'font-family:Georgia,"Times New Roman",serif;';
+        'background:#0c0c0e;color:#d6d4cc;font-family:Georgia,"Times New Roman",serif;';
     const bar = 'flex:0 0 auto;display:flex;align-items:center;padding:14px 18px;' +
                 'font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:#8a8880;';
     overlay.innerHTML =
@@ -291,29 +335,17 @@ function buildShell() {
 function openShell() {
     try {
         dbg('opening…');
-        buildShell();
-        loadState();
-        hideChrome();
+        buildShell(); loadState(); hideChrome();
         activeTab = 'story';
         document.getElementById('cyoa-overlay').style.display = 'flex';
         try { render(); } catch (e) { err('Render failed: ' + (e?.message || e)); }
-    } catch (e) {
-        err('Open failed: ' + (e?.message || e));   // <- the v0.1 silent failure now speaks
-    }
+    } catch (e) { err('Open failed: ' + (e?.message || e)); }
 }
-function closeShell() {
-    const o = document.getElementById('cyoa-overlay');
-    if (o) o.style.display = 'none';
-    restoreChrome();
-}
-function toggleShell() {
-    const o = document.getElementById('cyoa-overlay');
-    (o && o.style.display !== 'none') ? closeShell() : openShell();
-}
+function closeShell() { const o = document.getElementById('cyoa-overlay'); if (o) o.style.display = 'none'; restoreChrome(); }
+function toggleShell() { const o = document.getElementById('cyoa-overlay'); (o && o.style.display !== 'none') ? closeShell() : openShell(); }
 
-/* ENTRY POINTS — three, independent, best-effort. */
 function buildFAB() {
-    document.getElementById('cyoa-fab')?.remove();   // kill any stale FAB, then rebind fresh
+    document.getElementById('cyoa-fab')?.remove();
     const fab = document.createElement('button');
     fab.id = 'cyoa-fab'; fab.title = 'Open CYOA'; fab.style.zIndex = Z;
     fab.innerHTML = '<i class="fa-solid fa-book-open"></i>';
@@ -333,8 +365,7 @@ function registerSlash(c) {
     try {
         if (c?.SlashCommandParser?.addCommandObject && c?.SlashCommand?.fromProps) {
             c.SlashCommandParser.addCommandObject(c.SlashCommand.fromProps({
-                name: 'cyoa', callback: () => { toggleShell(); return ''; }, helpString: 'Toggle the CYOA shell',
-            }));
+                name: 'cyoa', callback: () => { toggleShell(); return ''; }, helpString: 'Toggle the CYOA shell' }));
             return 'modern';
         }
     } catch (e) {}
@@ -347,8 +378,9 @@ function registerSlash(c) {
     return 'none';
 }
 
-/* INIT — each step isolated so one failure can't kill the entry points. */
+/* INIT */
 jQuery(async () => {
+    await loadStory();                               // story ready before first open
     try { buildFAB(); } catch (e) { err('FAB build failed: ' + (e?.message || e)); }
     try { buildWand(); } catch (e) {}
     const c = getCtx();
@@ -361,6 +393,6 @@ jQuery(async () => {
         }
     } catch (e) {}
     const slash = registerSlash(c);
-    if (DEBUG) dbg('loaded v' + VER + ' (slash: ' + slash + ')');
+    if (DEBUG) dbg('loaded v' + VER + ' (story: ' + (STORY?.title || 'fallback') + ', slash: ' + slash + ')');
     console.log('[cyoa-shell] ✅ loaded v' + VER + '; slash=' + slash);
 });

@@ -1,0 +1,78 @@
+{
+  "title": "Oythe Castle",
+  "start": "oythe_great_hall",
+
+  "initial": {
+    "vars":      { "vitality": 39, "vitalityMax": 44, "stamina": 5, "defense": 2 },
+    "inventory": ["kellsei", "wooden_cross"],
+    "flags":     { "alerted": false },
+    "statuses":  []
+  },
+
+  "items": {
+    "kellsei":      "Kellsei",
+    "wooden_cross": "Wooden Cross",
+    "castle_key":   "Castle Key",
+    "torch":        "Guttering Torch"
+  },
+
+  "statuses": {
+    "wounded":    { "label": "Wounded",    "boosts": { "defense": -1 } },
+    "emboldened": { "label": "Emboldened", "boosts": { "defense":  1 } }
+  },
+
+  "nodes": {
+    "oythe_great_hall": {
+      "id": "oythe_great_hall",
+      "mode": "authored",
+      "location": "Oythe Castle — Great Hall",
+      "prose": "I creep down the stairs and peer into the entrance hall. A knight stands guard, sword and shield raised, his gaze darting about. A faint clinking comes from the chains connecting his helmet to his gambeson.",
+      "image": null,
+      "choices": [
+        { "label": "Attack the Crusader",        "goto": "combat_crusader", "effects": { "setFlag": ["alerted"] } },
+        { "label": "Slip through the side door",  "goto": "upper_floor",     "requires": { "item": "castle_key" } },
+        { "label": "Return to the Upper Floor",   "goto": "upper_floor" }
+      ]
+    },
+
+    "combat_crusader": {
+      "id": "combat_crusader",
+      "mode": "authored",
+      "location": "Oythe Castle — The Crusader",
+      "prose": "He turns at the scrape of my boot. Steel rings free. There is no more creeping now — only the few feet of cold air between us, and what I choose to do with them.",
+      "image": null,
+      "choices": [
+        { "label": "Strike first",                 "goto": "crusader_down", "effects": { "vars": { "vitality": -3 }, "addStatus": ["wounded"] } },
+        { "label": "Throw down your blade and run", "goto": "upper_floor" }
+      ]
+    },
+
+    "crusader_down": {
+      "id": "crusader_down",
+      "mode": "authored",
+      "location": "Oythe Castle — The Fallen Knight",
+      "prose": "He goes down heavy, armour ringing on stone. For a moment the hall is very quiet. His belt sags with the weight of whatever he was guarding.",
+      "image": null,
+      "choices": [
+        { "label": "Search the body",   "goto": "upper_floor", "effects": { "give": ["castle_key", "torch"] } },
+        { "label": "Press on, leave him","goto": "upper_floor" }
+      ]
+    },
+
+    "upper_floor": {
+      "id": "upper_floor",
+      "mode": "authored",
+      "location": "Oythe Castle — Upper Floor",
+      "prose": "Cold flagstones, a guttering torch, the smell of old smoke. The stairwell yawns back down toward the hall. Whatever waits below, it is quieter up here.",
+      "image": null,
+      "choices": [
+        { "label": "Bind your wounds", "goto": "upper_floor", "requires": { "status": "wounded" },
+          "effects": { "removeStatus": ["wounded"], "vars": { "vitality": 5 }, "clearFlag": ["alerted"], "take": ["torch"] } },
+        { "label": "Steel yourself", "goto": "upper_floor", "requires": { "var": ["vitality", ">=", 10] },
+          "effects": { "addStatus": ["emboldened"] } },
+        { "label": "Descend again", "goto": "oythe_great_hall" },
+        { "label": "Improvise from here  (✨ emergent)", "emergent": true }
+      ]
+    }
+  }
+}
