@@ -22,6 +22,7 @@
 const NS = "cyoa-shell";  // v0.2.1
 const Z  = 31000;
 let DEBUG = true;   // <- set to false later; gates the diagnostic toasts
+const VER = '0.2.2';
 
 /* Robust context getter — never assume the global is the right shape. */
 function getCtx() {
@@ -260,20 +261,21 @@ function restoreChrome() {
  * SHELL
  * -------------------------------------------------------------------------- */
 function buildShell() {
-    if (document.getElementById('cyoa-overlay')) return;
+    document.getElementById('cyoa-overlay')?.remove();   // rebuild fresh every open
     const overlay = document.createElement('div');
     overlay.id = 'cyoa-overlay';
     // Load-bearing layout is pinned INLINE so ST's theme CSS can't collapse it.
     // (style.css now only handles cosmetics: type, choice colors, ornaments.)
     overlay.style.cssText =
-        'position:fixed;top:0;left:0;right:0;bottom:0;z-index:' + (Z + 1) + ';' +
-        'display:flex;flex-direction:column;background:#0c0c0e;color:#d6d4cc;' +
+        'position:fixed;top:0;left:0;right:0;bottom:0;width:100vw;height:100vh;' +
+        'z-index:' + (Z + 1) + ';display:flex;flex-direction:column;' +
+        'background:#0c0c0e;color:#d6d4cc;' +
         'font-family:Georgia,"Times New Roman",serif;';
     const bar = 'flex:0 0 auto;display:flex;align-items:center;padding:14px 18px;' +
                 'font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:#8a8880;';
     overlay.innerHTML =
         '<div style="' + bar + 'justify-content:space-between;border-bottom:1px solid #1c1c20;">' +
-            '<span>KENAM MOORWAK</span><span id="cyoa-close" style="cursor:pointer;letter-spacing:0;">✕</span></div>' +
+            '<span>KENAM MOORWAK · v' + VER + '</span><span id="cyoa-close" style="cursor:pointer;letter-spacing:0;">✕</span></div>' +
         '<div id="cyoa-body" style="flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;' +
             'padding:26px 22px 40px;width:100%;max-width:680px;margin:0 auto;box-sizing:border-box;"></div>' +
         '<div style="' + bar + 'justify-content:center;gap:28px;border-top:1px solid #1c1c20;">' +
@@ -359,6 +361,6 @@ jQuery(async () => {
         }
     } catch (e) {}
     const slash = registerSlash(c);
-    if (DEBUG) dbg(`loaded (slash: ${slash})`);
-    console.log('[cyoa-shell] ✅ loaded; slash=' + slash);
+    if (DEBUG) dbg('loaded v' + VER + ' (slash: ' + slash + ')');
+    console.log('[cyoa-shell] ✅ loaded v' + VER + '; slash=' + slash);
 });
