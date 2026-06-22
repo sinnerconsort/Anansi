@@ -24,7 +24,7 @@
 const NS = "palimpsest";
 const Z  = 31000;
 let DEBUG = true;            // <- set false once happy; gates diagnostic toasts
-const VER = '0.4.0';
+const VER = '0.5.0';
 
 function getCtx() {
     try { return SillyTavern.getContext(); }
@@ -183,25 +183,111 @@ async function goTo(nodeId, choice) {
     await commitReceipt(node, choice?.label);
     render();
 }
-async function improvise(seedLabel) {
+/* ----------------------------------------------------------------------------
+ * EMERGENT ENGINE — the fix for teleport-vomit.
+ *
+ * Why the old improvise() vomited: it called generateQuietPrompt, which
+ * assembles the FULL chat pipeline — the card's first message, the whole
+ * history, every Codex/Chronicler injection. The model got three "where are
+ * we" premises at once and tried to reconcile them.
+ *
+ * The fix is BOUNDED CONTEXT (spoiler-gate): rawGen() uses generateRaw, which
+ * runs a self-contained prompt with NO chat history. We hand the model only
+ * what THIS beat needs — persona, optional lore seeds, and (for continuation)
+ * the single previous beat. The shell owns the premise; nothing competes.
+ * -------------------------------------------------------------------------- */
+
+/* Bounded generation. generateRaw = no history; quietPrompt = fallback only. */
+async function rawGen(prompt) {
     const c = getCtx();
-    if (typeof c?.generateQuietPrompt !== 'function') { err('generateQuietPrompt unavailable on this ST.'); return; }
-    dbg('Improvising…');
-    // NOTE (next phase): emergent will also EMIT effects into the vocabulary
-    // above; the socket (applyEffects) is already here waiting for it.
-    const quietPrompt =
-        'You are the narrator of a second-person gamebook. Continue briefly (2-4 sentences) ' +
-        'from: "' + seedLabel + '". Then offer 2-3 choices. Reply ONLY with fenced JSON:\n' +
-        '```json\n{ "location": "...", "prose": "...", "choices": [ { "label": "..." } ] }\n```';
+    if (typeof c?.generateRaw === 'function')         return await c.generateRaw(prompt, null, false, false);
+    if (typeof c?.generateQuietPrompt === 'function') return await c.generateQuietPrompt({ quietPrompt: prompt });
+    throw new Error('no generation function on this ST');
+}
+
+/* Persona = who "you" are. The only chat-derived context we allow in. */
+function personaBlock() {
+    const c = getCtx();
+    const you = c?.name1 || 'the reader';
+    return 'THE READER (write in second person, "you" = this person): ' + you;
+}
+
+/* Optional Lexicon seeds — Spark's pattern. Absent Lexicon → empty, no error. */
+async function loreSeedBlock() {
     try {
-        const raw = await c.generateQuietPrompt({ quietPrompt });
-        const data = JSON.parse(String(raw).replace(/```json|```/g, '').trim());
-        if (!data.prose || !Array.isArray(data.choices)) throw new Error('shape');
-        const id = 'emergent_' + Date.now();
-        STORY.nodes[id] = { id, mode: 'emergent', location: data.location || 'Improvised',
-            prose: data.prose, image: null,
-            choices: data.choices.slice(0, 3).map(ch => ({ label: ch.label, emergent: true })) };
-        await goTo(id);
+        if (!window.LexiconAPI?.isActive?.()) return '';
+        const hints = await window.LexiconAPI.getHintableEntries();
+        if (!hints?.length) return '';
+        const lines = hints.slice(0, 3).map(h => h.hintText
+            ? '- ' + h.title + ': ' + h.hintText
+            : '- something about "' + h.title + '" lingers').join('\n');
+        return '\nNARRATIVE SEEDS (weave 1-2 in as atmosphere — hint, do not explain):\n' + lines + '\n';
+    } catch (e) { return ''; }
+}
+
+/* Parse the model's fenced JSON page defensively. */
+function parsePage(raw) {
+    const data = JSON.parse(String(raw).replace(/```json|```/g, '').trim());
+    if (!data.prose || !Array.isArray(data.choices)) throw new Error('shape');
+    return data;
+}
+function makeEmergentNode(data) {
+    const id = 'emergent_' + Date.now();
+    STORY.nodes[id] = { id, mode: 'emergent', location: data.location || 'Untitled',
+        prose: data.prose, image: null,
+        choices: data.choices.slice(0, 3).map(ch => ({ label: ch.label, emergent: true })) };
+    return id;
+}
+
+/* Overwrite the chat's first message with the shell's opening (REPLACE mode). */
+async function replaceFirstMessage(node) {
+    const c = getCtx(); if (!c?.chat) return;
+    const msg = { name: c.name2 || 'Story', is_user: false,
+        mes: '〔' + node.location + '〕\n\n' + node.prose,
+        send_date: Date.now(), extra: { [NS]: true, palimpsestPage: node.id, palimpsestOpening: true } };
+    if (c.chat.length > 0) c.chat[0] = msg; else c.chat.push(msg);
+    try { await c.saveChat?.(); } catch (e) {}
+    try { c.reloadCurrentChat?.(); } catch (e) {}
+}
+
+/* Begin a new telling: generate an opening from bounded context and REPLACE
+   the card's first message so no competing premise survives. */
+async function generateOpening() {
+    dbg('Improvising opening…');
+    try {
+        const seeds = await loreSeedBlock();
+        const prompt =
+            'You are the narrator of a second-person interactive gamebook. Begin a NEW story from nothing — ' +
+            'invent the opening situation yourself. Set the scene, establish mood, and place the reader in a ' +
+            'concrete moment.\n\n' + personaBlock() + '\n' + seeds +
+            '\nWrite 2-4 sentences, then offer 2-3 distinct choices. Reply ONLY with fenced JSON:\n' +
+            '```json\n{ "location": "...", "prose": "...", "choices": [ { "label": "..." } ] }\n```';
+        const data = parsePage(await rawGen(prompt));
+        const id = makeEmergentNode(data);
+        const node = STORY.nodes[id];
+        state = FRESH(); state.current = id; state.history = [id];
+        applyEffects(null);
+        persist();
+        await replaceFirstMessage(node);     // REPLACE, not append — shell owns the premise
+        activeTab = 'story'; render();
+        dbg('Opening written.');
+    } catch (e) { err('Opening failed: ' + (e?.message || e)); }
+}
+
+/* Continue from a chosen emergent label — bounded to the PREVIOUS beat only. */
+async function continueFrom(seedLabel, prevProse) {
+    dbg('Improvising…');
+    try {
+        const seeds = await loreSeedBlock();
+        const prompt =
+            'You are the narrator of a second-person interactive gamebook. Continue the story.\n\n' +
+            'PREVIOUS BEAT:\n' + (prevProse || '(none)') + '\n\n' +
+            'THE READER CHOSE: "' + seedLabel + '"\n' + personaBlock() + '\n' + seeds +
+            '\nWrite 2-4 sentences continuing naturally from that choice, then offer 2-3 choices. ' +
+            'Reply ONLY with fenced JSON:\n' +
+            '```json\n{ "location": "...", "prose": "...", "choices": [ { "label": "..." } ] }\n```';
+        const data = parsePage(await rawGen(prompt));
+        await goTo(makeEmergentNode(data));
     } catch (e) { err('Could not parse the model output. Staying put.'); }
 }
 
@@ -265,6 +351,7 @@ function settingsView() {
         return '<div class="palimpsest-row" style="cursor:default">' + nm + ' <b style="color:' + (on ? '#7fae6e' : '#6a685f') + '">' + (on ? '✓ detected' : '— not present') + '</b></div>'; }).join('');
     return '<div class="palimpsest-loc">Settings</div>' + ORN
         + '<div class="palimpsest-list">'
+        + '<div class="palimpsest-row" id="palimpsest-newtelling">✦ Begin a new telling (improvise opening)</div>'
         + '<div class="palimpsest-row" id="palimpsest-reload">⟳ Reload story.json</div>'
         + '<div class="palimpsest-empty">Story: ' + (STORY?.title || '—') + ' · v' + VER + '</div>'
         + '<div class="palimpsest-empty">Optional suite integrations — the shell runs without any.</div>'
@@ -280,12 +367,13 @@ function render() {
         : activeTab === 'settings' ? settingsView() : storyView();
     $body.querySelectorAll('.palimpsest-choice[data-i]').forEach(el => el.addEventListener('click', () => {
         const ch = nodeById(state.current).choices[Number(el.dataset.i)];
-        if (ch.emergent) improvise(ch.label);
+        if (ch.emergent) continueFrom(ch.label, nodeById(state.current)?.prose);
         else if (ch.goto) goTo(ch.goto, ch);
         else toastr.warning('No destination yet.', 'Palimpsest');
     }));
-    const reset = document.getElementById('palimpsest-reset');
-    if (reset) reset.addEventListener('click', () => { state = FRESH(); persist(); activeTab = 'story'; render(); dbg('Story reset.'); });
+    const newtelling = document.getElementById('palimpsest-newtelling');
+    if (newtelling) newtelling.addEventListener('click', () => { generateOpening(); });
+    const reset = document.getElementById('palimpsest-reset');    if (reset) reset.addEventListener('click', () => { state = FRESH(); persist(); activeTab = 'story'; render(); dbg('Story reset.'); });
     const reload = document.getElementById('palimpsest-reload');
     if (reload) reload.addEventListener('click', async () => { await loadStory(); loadState(); render(); dbg('Reloaded ' + (STORY?.title || 'story') + '.'); });
     document.querySelectorAll('.palimpsest-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === activeTab));
