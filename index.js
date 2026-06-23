@@ -24,7 +24,7 @@
 const NS = "palimpsest";
 const Z  = 31000;
 let DEBUG = true;            // <- set false once happy; gates diagnostic toasts
-const VER = '0.8.0';
+const VER = '0.9.0';
 
 function getCtx() {
     try { return SillyTavern.getContext(); }
@@ -263,28 +263,64 @@ async function rawGen(prompt) {
 /* Run ST macros so a literal {{user}}/{{char}} in lore becomes the real name. */
 function sub(text) { const c = getCtx(); try { return c?.substituteParams ? c.substituteParams(String(text)) : String(text); } catch (e) { return String(text); } }
 
+/* Which card fields Palimpsest feeds the model. Sensible defaults carry novices;
+   toggles serve customizers. First Message defaults OFF — including it replays
+   the card's scripted opening (the old "teleport-vomit" premise collision). */
+const FIELD_DEFS = [
+    ['description', 'Description',   true],
+    ['personality', 'Personality',   true],
+    ['scenario',    'Scenario',      true],
+    ['first_mes',   'First Message', false],
+    ['persona',     'Your Persona',  true],
+];
+const FIELD_CAP = 1200;   // per-field char cap: generous (1-2k cards come through) but bounds a mega-card
+
+function getFields() {
+    const saved = settingsBag()?.fields || {};
+    const out = {};
+    FIELD_DEFS.forEach(([k, , def]) => { out[k] = (k in saved) ? !!saved[k] : def; });
+    return out;
+}
+function setField(k, v) {
+    const b = settingsBag(); if (!b) return;
+    b.fields = b.fields || {};
+    b.fields[k] = v;
+    getCtx()?.saveSettingsDebounced?.();
+}
+function charField(k) {
+    const c = getCtx();
+    const ch = c?.characters?.[c?.characterId];
+    if (!ch) return '';
+    const v = ch[k] ?? ch.data?.[k] ?? '';
+    return sub(String(v)).trim().slice(0, FIELD_CAP);
+}
+
 /* Who "you" are. */
 function personaBlock() {
     const c = getCtx();
     const you = c?.name1 || 'the reader';
-    const desc = c?.power_user?.persona_description || c?.powerUserSettings?.persona_description || '';
-    return 'THE READER (second person, "you" = this person): ' + you + (desc ? ' — ' + sub(desc).slice(0, 240) : '');
+    let desc = '';
+    if (getFields().persona) desc = sub(c?.power_user?.persona_description || c?.powerUserSettings?.persona_description || '').trim().slice(0, FIELD_CAP);
+    return 'THE READER (second person, "you" = this person): ' + you + (desc ? ' — ' + desc : '');
 }
 
-/* Who the telling concerns — the card's character + a short identity (NOT its
-   first_mes, which is the competing premise we replace). Card content decides:
-   rich character card -> orbits them; thin/world card -> the model leans on lore. */
+/* Who/what the telling concerns — assembled from the toggled card fields.
+   Card content decides focus: rich character card -> orbits them; world card ->
+   the races/customs/scenario carry it. */
 function subjectBlock() {
     const c = getCtx();
     const name = c?.name2;
     if (!name) return '';
-    let identity = '';
-    try {
-        const ch = c?.characters?.[c?.characterId];
-        identity = ch?.description || ch?.data?.description || '';
-    } catch (e) {}
-    return 'THE TELLING CONCERNS: ' + name + (identity ? ' — ' + sub(identity).slice(0, 360) : '')
-        + '\n(Center the opening on ' + name + ' — present or strongly implied. Do NOT invent a new named character to stand in for them.)';
+    const f = getFields();
+    const parts = [];
+    if (f.description) { const v = charField('description'); if (v) parts.push(v); }
+    if (f.personality) { const v = charField('personality'); if (v) parts.push('Personality: ' + v); }
+    if (f.scenario)    { const v = charField('scenario');    if (v) parts.push('Scenario: ' + v); }
+    if (f.first_mes)   { const v = charField('first_mes');   if (v) parts.push('Canonical opening (reference only — do NOT replay it): ' + v); }
+    const body = parts.length ? '\n' + parts.join('\n') : '';
+    return 'THE TELLING CONCERNS: ' + name + body
+        + '\n(Honor the established world and its races, customs, and details EXACTLY as written above — do not ignore them or invent vague substitutes. '
+        + 'Center the opening on ' + name + ', present or strongly implied; do NOT introduce a new named character to stand in for them.)';
 }
 
 /* Optional Lexicon seeds — Spark's pattern, now framed as belonging to the subject. */
@@ -614,6 +650,10 @@ function settingsView() {
     const cur = getProfileId();
     const opts = ['<option value=""' + (cur ? '' : ' selected') + '>— use main chat connection —</option>']
         .concat(listProfiles().map(p => '<option value="' + p.id + '"' + (p.id === cur ? ' selected' : '') + '>' + (p.name || p.id) + '</option>')).join('');
+    const f = getFields();
+    const fieldRows = FIELD_DEFS.map(([k, label]) =>
+        '<div class="palimpsest-row palimpsest-field" data-field="' + k + '">' + label
+        + ' <b style="color:' + (f[k] ? '#7fae6e' : '#6a685f') + '">' + (f[k] ? '✓ shown' : '— hidden') + '</b></div>').join('');
     return '<div class="palimpsest-loc">Settings</div>' + ORN
         + '<div class="palimpsest-list">'
         + '<div class="palimpsest-cfg">'
@@ -624,6 +664,9 @@ function settingsView() {
         +   '<input id="palimpsest-tokens" type="number" min="500" max="8000" step="100" value="' + getTokenBudget() + '">'
         +   '<div class="palimpsest-empty">Reasoning models spend tokens on hidden thinking first — prefer a non-reasoning profile, or raise to 4000+ if pages get cut off.</div>'
         + '</div>'
+        + '<div class="palimpsest-empty" style="margin-top:6px;">What Palimpsest reads from the card (tap to toggle):</div>'
+        + fieldRows
+        + '<div class="palimpsest-empty">First Message is the card\'s scripted opening — leave OFF so Palimpsest writes a fresh telling instead of replaying it.</div>'
         + '<div class="palimpsest-row" id="palimpsest-newtelling">✦ Begin a new telling</div>'
         + '<div class="palimpsest-row" id="palimpsest-reload">⟳ Reload story.json</div>'
         + '<div class="palimpsest-empty">Story: ' + (STORY?.title || '—') + ' · v' + VER + '</div>'
@@ -661,6 +704,9 @@ function render() {
     if (prof) prof.addEventListener('change', () => { const b = settingsBag(); if (b) { b.profileId = prof.value; getCtx()?.saveSettingsDebounced?.(); } dbg(prof.value ? 'Using selected profile.' : 'Using main chat connection.'); });
     const toks = document.getElementById('palimpsest-tokens');
     if (toks) toks.addEventListener('change', () => { const b = settingsBag(); if (b) { b.tokenBudget = Math.max(500, parseInt(toks.value, 10) || 2000); getCtx()?.saveSettingsDebounced?.(); } });
+    $body.querySelectorAll('.palimpsest-field').forEach(el => el.addEventListener('click', () => {
+        const k = el.dataset.field; setField(k, !getFields()[k]); render();
+    }));
     document.querySelectorAll('.palimpsest-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === activeTab));
 }
 
