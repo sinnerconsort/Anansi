@@ -221,3 +221,10 @@ body.palimpsest-lock { overflow: hidden !important; }
 /* "the book is writing…" indicator */
 #palimpsest-writing{ animation:pmp-pulse 1.3s ease-in-out infinite; }
 @keyframes pmp-pulse{ 0%,100%{opacity:.3;} 50%{opacity:1;} }
+
+/* settings: profile / token-budget config */
+.palimpsest-cfg{ max-width:46ch; margin:0 auto 8px; text-align:left; }
+.palimpsest-cfg label{ display:block; font-size:11px; letter-spacing:2px; text-transform:uppercase; color:#7d7b73; margin:14px 0 5px; }
+.palimpsest-cfg select, .palimpsest-cfg input{ width:100%; box-sizing:border-box; background:#141417; color:#cdcabf;
+  border:1px solid #2a2a30; border-radius:3px; padding:9px 10px; font-family:Georgia,"Times New Roman",serif; font-size:14px; }
+.palimpsest-cfg select:focus, .palimpsest-cfg input:focus{ outline:none; border-color:#4a4a52; }

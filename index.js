@@ -24,7 +24,7 @@
 const NS = "palimpsest";
 const Z  = 31000;
 let DEBUG = true;            // <- set false once happy; gates diagnostic toasts
-const VER = '0.7.3';
+const VER = '0.8.0';
 
 function getCtx() {
     try { return SillyTavern.getContext(); }
@@ -225,8 +225,36 @@ async function goTo(nodeId, choice) {
  * -------------------------------------------------------------------------- */
 
 /* Bounded generation. generateRaw = no history; quietPrompt = fallback only. */
+/* Config (global, not per-chat): which profile to generate against + budget. */
+function getProfileId()   { return settingsBag()?.profileId || ''; }
+function getTokenBudget() { return settingsBag()?.tokenBudget || 2000; }
+function listProfiles() {
+    const c = getCtx();
+    const cm = (c?.extensionSettings || c?.extension_settings)?.connectionManager;
+    return (cm && Array.isArray(cm.profiles)) ? cm.profiles : [];
+}
+
+/* Bounded generation. Preferred path: an independent connection against a
+   chosen profile, so Palimpsest uses ITS OWN clean preset instead of inheriting
+   whatever bias your main chat preset carries. Falls back to the chat
+   connection when no profile is set (so it works out of the box). */
 async function rawGen(prompt) {
     const c = getCtx();
+    const pid = getProfileId();
+    if (pid && c?.ConnectionManagerRequestService?.sendRequest) {
+        try {
+            const res = await c.ConnectionManagerRequestService.sendRequest(
+                pid,
+                [{ role: 'user', content: prompt }],
+                getTokenBudget(),
+                { extractData: true, includePreset: true, includeInstruct: false },
+                {}
+            );
+            const text = (res && typeof res === 'object') ? (res.content ?? res.text) : res;
+            if (text) return text;
+            throw new Error('empty response');
+        } catch (e) { err('Profile call failed — using chat connection. ' + (e?.message || e)); }
+    }
     if (typeof c?.generateRaw === 'function')         return await c.generateRaw(prompt, null, false, false);
     if (typeof c?.generateQuietPrompt === 'function') return await c.generateQuietPrompt({ quietPrompt: prompt });
     throw new Error('no generation function on this ST');
@@ -583,8 +611,19 @@ function settingsView() {
     const present = n => !!(getCtx()?.[n] || window?.[n]);
     const suite = SUITE.map(n => { const on = present(n); const nm = n.replace('API', '');
         return '<div class="palimpsest-row" style="cursor:default">' + nm + ' <b style="color:' + (on ? '#7fae6e' : '#6a685f') + '">' + (on ? '✓ detected' : '— not present') + '</b></div>'; }).join('');
+    const cur = getProfileId();
+    const opts = ['<option value=""' + (cur ? '' : ' selected') + '>— use main chat connection —</option>']
+        .concat(listProfiles().map(p => '<option value="' + p.id + '"' + (p.id === cur ? ' selected' : '') + '>' + (p.name || p.id) + '</option>')).join('');
     return '<div class="palimpsest-loc">Settings</div>' + ORN
         + '<div class="palimpsest-list">'
+        + '<div class="palimpsest-cfg">'
+        +   '<label>Generation profile</label>'
+        +   '<select id="palimpsest-profile">' + opts + '</select>'
+        +   '<div class="palimpsest-empty">Default uses your main chat connection. Give Palimpsest its own profile to escape tone/bias bleed from your chat preset.</div>'
+        +   '<label>Token budget</label>'
+        +   '<input id="palimpsest-tokens" type="number" min="500" max="8000" step="100" value="' + getTokenBudget() + '">'
+        +   '<div class="palimpsest-empty">Reasoning models spend tokens on hidden thinking first — prefer a non-reasoning profile, or raise to 4000+ if pages get cut off.</div>'
+        + '</div>'
         + '<div class="palimpsest-row" id="palimpsest-newtelling">✦ Begin a new telling</div>'
         + '<div class="palimpsest-row" id="palimpsest-reload">⟳ Reload story.json</div>'
         + '<div class="palimpsest-empty">Story: ' + (STORY?.title || '—') + ' · v' + VER + '</div>'
@@ -618,6 +657,10 @@ function render() {
     const reset = document.getElementById('palimpsest-reset');    if (reset) reset.addEventListener('click', () => { state = FRESH(); persist(); showCover(); dbg('The book closes.'); });
     const reload = document.getElementById('palimpsest-reload');
     if (reload) reload.addEventListener('click', async () => { await loadStory(); loadState(); render(); dbg('Reloaded ' + (STORY?.title || 'story') + '.'); });
+    const prof = document.getElementById('palimpsest-profile');
+    if (prof) prof.addEventListener('change', () => { const b = settingsBag(); if (b) { b.profileId = prof.value; getCtx()?.saveSettingsDebounced?.(); } dbg(prof.value ? 'Using selected profile.' : 'Using main chat connection.'); });
+    const toks = document.getElementById('palimpsest-tokens');
+    if (toks) toks.addEventListener('change', () => { const b = settingsBag(); if (b) { b.tokenBudget = Math.max(500, parseInt(toks.value, 10) || 2000); getCtx()?.saveSettingsDebounced?.(); } });
     document.querySelectorAll('.palimpsest-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === activeTab));
 }
 
