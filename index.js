@@ -24,7 +24,7 @@
 const NS = "palimpsest";
 const Z  = 31000;
 let DEBUG = true;            // <- set false once happy; gates diagnostic toasts
-const VER = '0.7.1';
+const VER = '0.7.2';
 
 function getCtx() {
     try { return SillyTavern.getContext(); }
@@ -285,8 +285,11 @@ function addVariant(node, view) { node.variants.push(view); node.active = node.v
    (Length will become a Settings dial later; this is the new default.) */
 const CRAFT =
     '\nWrite a rich paragraph or two — favor voice, atmosphere, and interiority over stage-direction. ' +
-    'Let characters SPEAK where natural; end on a line of dialogue or a charged silence, never mute pantomime. ' +
-    'The reader does NOT yet know what the seeds mean — plant unease and withhold explanation; the mystery is the point. ' +
+    'Let characters SPEAK where natural; show, don\'t tell; never mute pantomime. ' +
+    'TONE COMES FROM THE WORLD, not a default mood: honor the established setting and genre above all, ' +
+    'and let it dictate whether the scene is bright, eerie, tender, or grim. ' +
+    'Do NOT import tropes that do not belong to this world (e.g. no clergy, churches, or human villages ' +
+    'unless the world actually calls for them); if it is the Fae realm, it must read unmistakably Fae. ' +
     'Then offer 2-3 distinct choices. Reply ONLY with fenced JSON:\n' +
     '```json\n{ "location": "...", "prose": "...", "choices": [ { "label": "..." } ] }\n```';
 
@@ -295,7 +298,8 @@ async function genOpeningView() {
     const prompt =
         'You are the narrator of a second-person interactive gamebook. Begin a NEW telling — ' +
         'invent a fresh opening SITUATION (not the character\'s canonical intro). ' +
-        'Place the reader in a concrete moment, set scene and mood.\n\n' +
+        'Place the reader in a concrete moment true to the world. ' +
+        'AVOID the generic "wake up wounded/amnesiac in a strange stone room" opening unless the world specifically calls for it.\n\n' +
         personaBlock() + '\n' + subjectBlock() + '\n' + seeds + CRAFT;
     return viewFrom(parsePage(await rawGen(prompt)));
 }
