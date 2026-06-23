@@ -24,7 +24,7 @@
 const NS = "palimpsest";
 const Z  = 31000;
 let DEBUG = true;            // <- set false once happy; gates diagnostic toasts
-const VER = '0.9.2';
+const VER = '0.9.3';
 
 function getCtx() {
     try { return SillyTavern.getContext(); }
@@ -370,6 +370,10 @@ const CRAFT =
     'and let it dictate whether the scene is bright, eerie, tender, or grim. ' +
     'Do NOT import tropes that do not belong to this world (e.g. no clergy, churches, or human villages ' +
     'unless the world actually calls for them); if it is the Fae realm, it must read unmistakably Fae. ' +
+    'PROSE STYLE: a clear, grounded voice with natural, varied sentence rhythm. ' +
+    'When you name a feeling or a thing, state it directly rather than hinting at a vague unnamed quality. ' +
+    'Avoid ornamental antithesis (correcting one phrasing with a contrasting one for effect) and decorative ' +
+    'one- or two-word fragments used for drama. Prefer plain declaratives; say a thing once and move on. ' +
     'Then offer 2-3 distinct choices. Reply ONLY with fenced JSON:\n' +
     '```json\n{ "location": "...", "prose": "...", "choices": [ { "label": "..." } ] }\n```';
 
