@@ -24,7 +24,7 @@
 const NS = "palimpsest";
 const Z  = 31000;
 let DEBUG = true;            // <- set false once happy; gates diagnostic toasts
-const VER = '0.7.2';
+const VER = '0.7.3';
 
 function getCtx() {
     try { return SillyTavern.getContext(); }
@@ -110,9 +110,26 @@ const FRESH = () => JSON.parse(JSON.stringify({
 let state = FRESH();
 let suppressChatChanged = false;   // ignore the CHAT_CHANGED we trigger ourselves
 
+/* A stable per-chat key (survives reloads of the SAME chat). */
+function chatKey() {
+    const c = getCtx();
+    try { if (typeof c?.getCurrentChatId === 'function') { const id = c.getCurrentChatId(); if (id) return 'c:' + id; } } catch (e) {}
+    return 'c:' + (c?.chatId || c?.characterId || c?.groupId || 'default');
+}
+/* extensionSettings persists reliably via saveSettingsDebounced (every working
+   extension uses this) — unlike saveMetadata, which my build doesn't expose. */
+function settingsBag() {
+    const c = getCtx(); if (!c) return null;
+    const es = c.extensionSettings || c.extension_settings;
+    if (!es) return null;
+    es[NS] = es[NS] || {};
+    return es[NS];
+}
+
 function loadState() {
     const c = getCtx();
-    const saved = c?.chat_metadata?.[NS];
+    const bag = settingsBag();
+    const saved = (bag && bag[chatKey()]) || c?.chat_metadata?.[NS] || null;   // primary, then legacy fallback
     state = saved ? Object.assign(FRESH(), saved) : FRESH();
     // Re-hydrate the telling's generated pages — STORY was rebuilt from story.json on reload.
     if (state.tellingNodes && STORY?.nodes) Object.assign(STORY.nodes, state.tellingNodes);
@@ -120,17 +137,15 @@ function loadState() {
 }
 function persist() {
     const c = getCtx(); if (!c) return;
-    // Snapshot the emergent nodes this telling actually references, so they
-    // survive a reload (STORY.nodes is module memory; chat_metadata is not).
+    // Snapshot the emergent nodes this telling references so they survive reload.
     state.tellingNodes = {};
     new Set([...(state.history || []), state.current]).forEach(id => {
         const n = STORY?.nodes?.[id];
         if (n && n.variants) state.tellingNodes[id] = n;
     });
-    c.chat_metadata = c.chat_metadata || {};
-    c.chat_metadata[NS] = state;
-    if (typeof c.saveMetadata === 'function') c.saveMetadata();
-    else if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced();
+    const bag = settingsBag();
+    if (bag) { bag[chatKey()] = state; if (typeof c.saveSettingsDebounced === 'function') c.saveSettingsDebounced(); }
+    try { c.chat_metadata = c.chat_metadata || {}; c.chat_metadata[NS] = state; } catch (e) {}   // secondary mirror
 }
 
 async function commitReceipt(node, choiceLabel) {
